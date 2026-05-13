@@ -1,0 +1,14 @@
+langgraph
+langchain
+langchain-community
+tavily-python
+langchian-openai
+openai
+fastapi
+uvicorn
+
+
+axios
+fastapi[all]
+tailwindcss
+@tailwindcss/vite
