@@ -1,0 +1,2 @@
+ARTICLE_AGE = 2
+LIMIT = 10

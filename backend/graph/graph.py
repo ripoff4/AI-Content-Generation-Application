@@ -1,8 +1,11 @@
 from langgraph.graph import StateGraph, START, END
-from langchain.tools import tool
 from typing import TypedDict
-from langchain_community.tools.tavily_search import TavilySearchResults
 from langchain_openai import ChatOpenAI
+
+from backend.ingestion.tavily import get_trending_information
+from backend.ingestion.reddit import get_reddit_trending_information
+
+from backend.config import ARTICLE_AGE, LIMIT
 
 import os
 from dotenv import load_dotenv
@@ -13,8 +16,12 @@ load_dotenv()
 class AgentState(TypedDict):
 
     user_question: str
+
     response: str
+
     extracted_information: list
+
+    reddit_extracted_information: list
 
 
 llm = ChatOpenAI(
@@ -24,97 +31,198 @@ llm = ChatOpenAI(
 )
 
 
-@tool
-def get_trending_information(user_question: str):
-    '''
-        This is called Everysingle Time the graph is called    
-        This Tool is used to get trending information.
-    '''
-    search_tool = TavilySearchResults(max_results=3)
-    results = search_tool.invoke(user_question)
-    return results
+def get_extracted_information(state: AgentState):
+
+    results = get_trending_information(
+        state["user_question"]
+    )
+
+    return {
+        "extracted_information": results
+    }
 
 
-def get_extracted_information(state: AgentState) -> AgentState:
+def get_reddit_extracted_information(state: AgentState):
 
-    results = get_trending_information.invoke(
-        {"user_question": state["user_question"]})
+    reddit_query = llm.invoke(
+        f"""
+        Convert this topic into a short Reddit search query.
 
-    return {"extracted_information": results}
+        Topic:
+        {state['user_question']}
+
+        Rules:
+        - Keep it short
+        - 1 to 3 words maximum
+        - No explanation
+        - No punctuation
+        """
+    ).content.strip()
+
+    results = get_reddit_trending_information(
+        reddit_query,
+        days=ARTICLE_AGE,
+        limit=LIMIT
+    )
+
+    return {
+        "reddit_extracted_information": results
+    }
 
 
-def summarize_information(state: AgentState) -> AgentState:
+def summarize_information(state: AgentState):
 
     informations = state["extracted_information"]
 
-    titles = "\n".join(
-        [f"- {info['title']}" for info in informations]
+    reddit_information = state[
+        "reddit_extracted_information"
+    ]
+
+    if not informations and not reddit_information:
+
+        return {
+            "response": (
+                f"No recent trending information found "
+                f"for '{state['user_question']}'."
+            )
+        }
+
+    tavily_contents = "\n\n".join(
+        [
+            f"""
+            NEWS ARTICLE {i+1}
+
+            Title: {info['title']}
+
+            Published Date:
+            {info['published_date']}
+
+            Content:
+            {info['content']}
+            """
+            for i, info in enumerate(informations)
+        ]
     )
 
-    contents = "\n\n".join(
-        [f"{i+1}. {info['content']}" for i, info in enumerate(informations)]
+    reddit_contents = "\n\n".join(
+        [
+            f"""
+            REDDIT POST {i+1}
+
+            Title:
+            {post['title']}
+
+            Subreddit:
+            r/{post['subreddit']}
+
+            Upvotes:
+            {post['score']}
+
+            Content:
+            {post['content']}
+            """
+            for i, post in enumerate(
+                reddit_information
+            )
+        ]
     )
 
-    prompt = prompt = f"""
-        You are a real-time internet trend analyst.
+    prompt = f"""
+    You are a real-time internet trend analyst.
 
-        Your job is to analyze web search results and identify:
-        - what is currently trending
-        - what people are discussing heavily
-        - viral moments
-        - controversies
-        - major announcements
-        - surprising developments
-        - emotional audience reactions
-        - hype-worthy topics
+    You are given TWO types of data:
 
-        IMPORTANT RULES:
-        - DO NOT generate a generic article.
-        - DO NOT explain background/history unless absolutely necessary.
-        - DO NOT give educational content.
-        - Focus ONLY on current trending discussions and recent buzz.
-        - The response should feel like insights collected from social media,
-        news discussions, YouTube commentary, Reddit, and fan conversations.
-        - Mention specific names, events, incidents, launches, matches,
-        performances, statements, or controversies whenever possible.
-        - Keep each trend short, engaging, and information-dense.
-        - Avoid corporate or textbook tone.
+    1. NEWS DATA
+    - factual reporting
+    - announcements
+    - mainstream coverage
 
-        WEB SEARCH RESULTS:
-        {contents}
+    2. REDDIT COMMUNITY DATA
+    - fan reactions
+    - emotional discussions
+    - memes
+    - hype
+    - controversies
+    - internet sentiment
 
-        USER TOPIC:
-        {state["user_question"]}
+    IMPORTANT:
+    - Ignore outdated information
+    - Focus ONLY on currently active discussions
+    - Prioritize highly engaging trends
+    - Avoid generic summaries
+    - Do NOT explain background/history
+    - Focus on WHAT is trending and WHY
 
-        OUTPUT FORMAT:
+    NEWS DATA:
+    {tavily_contents}
 
-        1. <Trend insight>
+    REDDIT DATA:
+    {reddit_contents}
 
-        2. <Trend insight>
+    USER TOPIC:
+    {state["user_question"]}
 
-        3. <Trend insight>
+    OUTPUT FORMAT:
 
-        4. <Trend insight>
+    1. <Trend insight>
 
-        Each point should:
-        - be 2-4 sentences
-        - explain WHY it is trending
-        - mention what people are reacting to
-        - feel current and engaging
+    2. <Trend insight>
+
+    3. <Trend insight>
+
+    4. <Trend insight>
+
+    Rules:
+    - 2-4 sentences each
+    - concise
+    - engaging
+    - modern internet tone
+    - mention reactions/sentiment
+    - explain WHY people care
     """
 
     response = llm.invoke(prompt)
 
-    return {"response": response.content}
+    return {
+        "response": response.content
+    }
 
 
 graph = StateGraph(AgentState)
 
-graph.add_node("get_extracted_information", get_extracted_information)
-graph.add_node("summarize_information", summarize_information)
+graph.add_node(
+    "get_extracted_information",
+    get_extracted_information
+)
 
-graph.add_edge(START, "get_extracted_information")
-graph.add_edge("get_extracted_information", "summarize_information")
-graph.add_edge("summarize_information", END)
+graph.add_node(
+    "get_reddit_extracted_information",
+    get_reddit_extracted_information
+)
+
+graph.add_node(
+    "summarize_information",
+    summarize_information
+)
+
+graph.add_edge(
+    START,
+    "get_extracted_information"
+)
+
+graph.add_edge(
+    "get_extracted_information",
+    "get_reddit_extracted_information"
+)
+
+graph.add_edge(
+    "get_reddit_extracted_information",
+    "summarize_information"
+)
+
+graph.add_edge(
+    "summarize_information",
+    END
+)
 
 agent = graph.compile()
