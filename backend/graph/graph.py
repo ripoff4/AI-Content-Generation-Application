@@ -1,6 +1,7 @@
 from langgraph.graph import StateGraph, START, END
 from typing import TypedDict
 from langchain_openai import ChatOpenAI
+from tenacity import retry, stop_after_attempt, wait_fixed
 
 from backend.ingestion.tavily import get_trending_information
 from backend.ingestion.reddit import get_reddit_trending_information
@@ -31,17 +32,40 @@ llm = ChatOpenAI(
 )
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_fixed(2)
+)
 def get_extracted_information(state: AgentState):
 
     results = get_trending_information(
         state["user_question"]
     )
 
+    topic = state["user_question"].lower()
+
+    filtered_results = []
+
+    for result in results:
+
+        combined_text = (
+            result["title"] + " " +
+            result["content"]
+        ).lower()
+
+        if topic in combined_text.lower():
+
+            filtered_results.append(result)
+
     return {
-        "extracted_information": results
+        "extracted_information": filtered_results
     }
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_fixed(2)
+)
 def get_reddit_extracted_information(state: AgentState):
 
     reddit_query = llm.invoke(
@@ -65,8 +89,23 @@ def get_reddit_extracted_information(state: AgentState):
         limit=LIMIT
     )
 
+    topic = state["user_question"].lower()
+
+    filtered_results = []
+
+    for result in results:
+
+        combined_text = (
+            result["title"] + " " +
+            result["content"]
+        ).lower()
+
+        if topic in combined_text.lower():
+
+            filtered_results.append(result)
+
     return {
-        "reddit_extracted_information": results
+        "reddit_extracted_information": filtered_results
     }
 
 

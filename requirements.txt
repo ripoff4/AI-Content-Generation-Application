@@ -6,6 +6,7 @@ langchian-openai
 openai
 fastapi
 uvicorn
+tenacity
 
 
 axios
